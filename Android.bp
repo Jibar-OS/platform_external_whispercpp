@@ -1,0 +1,84 @@
+// Copyright (C) 2026 The OpenIntelligenceRuntime Project
+// Licensed under the Apache License, Version 2.0
+//
+// whisper.cpp static library for AOSP — v0.4 / OIR audio.transcribe.
+// Upstream: https://github.com/ggml-org/whisper.cpp (v1.7.4)
+// Pattern mirrors external/llama.cpp/Android.bp.
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+cc_library_static {
+    name: "libwhisper",
+    vendor_available: true,
+    product_available: true,
+
+    srcs: [
+        // ggml core
+        "src/ggml/src/ggml.c",
+        "src/ggml/src/ggml-alloc.c",
+        "src/ggml/src/ggml-backend.cpp",
+        "src/ggml/src/ggml-backend-reg.cpp",
+        "src/ggml/src/ggml-quants.c",
+        "src/ggml/src/ggml-threading.cpp",
+        "src/ggml/src/ggml-opt.cpp",
+        // ggml CPU backend
+        "src/ggml/src/ggml-cpu/ggml-cpu.cpp",
+        "src/ggml/src/ggml-cpu/ggml-cpu-quants.c",
+        "src/ggml/src/ggml-cpu/ggml-cpu-aarch64.cpp",
+        "src/ggml/src/ggml-cpu/ggml-cpu-traits.cpp",
+        "src/ggml/src/ggml-cpu/ggml-cpu-hbm.cpp",
+        // whisper core
+        "src/src/whisper.cpp",
+    ],
+
+    export_include_dirs: [
+        "src/include",
+        "src/ggml/include",
+    ],
+
+    local_include_dirs: [
+        "src/include",
+        "src/ggml/include",
+        "src/ggml/src",
+        "src/ggml/src/ggml-cpu",
+        "src/src",
+    ],
+
+    cflags: [
+        "-DNDEBUG",
+        "-DGGML_USE_CPU",
+        "-D_GNU_SOURCE",
+        "-O3",
+        "-fPIC",
+        "-pthread",
+        "-Wall",
+        "-fexceptions",
+        "-frtti",
+        "-Wno-unused-parameter",
+        "-Wno-unused-function",
+        "-Wno-missing-field-initializers",
+        "-Wno-implicit-fallthrough",
+        "-Wno-unused-variable",
+        "-Wno-unused-but-set-variable",
+    ],
+
+    arch: {
+        arm64: {
+            cflags: [
+                "-DGGML_USE_CPU_AARCH64",
+            ],
+        },
+        x86_64: {
+            cflags: [
+                "-mavx2",
+                "-mfma",
+                "-mf16c",
+            ],
+            srcs: [
+                "src/ggml/src/ggml-cpu/cpu-feats-x86.cpp",
+            ],
+        },
+    },
+}
