@@ -1,118 +1,185 @@
-# TODO: should not use this
-if (WIN32)
-    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+cmake_minimum_required(VERSION 3.5) # for add_link_options and implicit target directories.
+project("whisper.cpp" C CXX)
+project("whisper.cpp" VERSION 1.7.4)
+include(CheckIncludeFileCXX)
 
-    if (BUILD_SHARED_LIBS)
-        set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
-    endif()
+set(SOVERSION 1)
+
+#set(CMAKE_WARN_DEPRECATED YES)
+set(CMAKE_WARN_UNUSED_CLI YES)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if (NOT XCODE AND NOT MSVC AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
 endif()
 
-if (WHISPER_COREML)
-    find_library(FOUNDATION_FRAMEWORK Foundation)
-    find_library(COREML_FRAMEWORK CoreML)
+# Add path to modules
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/")
 
-    if (COREML_FRAMEWORK)
-        message(STATUS "CoreML framework found")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-        set(WHISPER_EXTRA_FLAGS ${WHISPER_EXTRA_FLAGS} -DWHISPER_USE_COREML)
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(WHISPER_STANDALONE ON)
+
+    include(git-vars)
+
+    # configure project version
+    configure_file(${CMAKE_SOURCE_DIR}/bindings/javascript/package-tmpl.json ${CMAKE_SOURCE_DIR}/bindings/javascript/package.json @ONLY)
+else()
+    set(WHISPER_STANDALONE OFF)
+endif()
+
+if (EMSCRIPTEN)
+    set(BUILD_SHARED_LIBS_DEFAULT OFF)
+
+    option(WHISPER_WASM_SINGLE_FILE "whisper: embed WASM inside the generated whisper.js" ON)
+
+    # TODO: without these, we get the following error:
+    #       wasm-ld: error: --shared-memory is disallowed by whisper.cpp.o because it was not compiled with 'atomics' or 'bulk-memory' features.
+    set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -pthread -s TOTAL_STACK=5242880")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -s TOTAL_STACK=5242880")
+else()
+    if (MINGW)
+        set(BUILD_SHARED_LIBS_DEFAULT OFF)
     else()
-        message(FATAL_ERROR "CoreML framework not found")
-    endif()
-
-    if (WHISPER_COREML_ALLOW_FALLBACK)
-        set(WHISPER_EXTRA_FLAGS ${WHISPER_EXTRA_FLAGS} -DWHISPER_COREML_ALLOW_FALLBACK)
+        set(BUILD_SHARED_LIBS_DEFAULT ON)
     endif()
 endif()
 
-if (WHISPER_OPENVINO)
-    find_package(OpenVINO REQUIRED COMPONENTS Runtime)
-endif()
+option(BUILD_SHARED_LIBS "build shared libraries" ${BUILD_SHARED_LIBS_DEFAULT})
 
 #
-# libraries
+# option list
 #
 
-# whisper.coreml
+# general
+option(WHISPER_CCACHE "whisper: use ccache if available" ON)
 
-if (WHISPER_COREML)
-    set(TARGET whisper.coreml)
+# debug
+option(WHISPER_ALL_WARNINGS           "whisper: enable all compiler warnings"                   ON)
+option(WHISPER_ALL_WARNINGS_3RD_PARTY "whisper: enable all compiler warnings in 3rd party libs" OFF)
 
-    add_library(${TARGET}
-        coreml/whisper-encoder.h
-        coreml/whisper-encoder.mm
-        coreml/whisper-encoder-impl.h
-        coreml/whisper-encoder-impl.m
-        )
+# build
+option(WHISPER_FATAL_WARNINGS "whisper: enable -Werror flag" OFF)
 
-    include(DefaultTargetOptions)
+# sanitizers
+option(WHISPER_SANITIZE_THREAD    "whisper: enable thread sanitizer"    OFF)
+option(WHISPER_SANITIZE_ADDRESS   "whisper: enable address sanitizer"   OFF)
+option(WHISPER_SANITIZE_UNDEFINED "whisper: enable undefined sanitizer" OFF)
 
-    target_include_directories(${TARGET} PUBLIC
-        .
-        )
+# extra artifacts
+option(WHISPER_BUILD_TESTS    "whisper: build tests"          ${WHISPER_STANDALONE})
+option(WHISPER_BUILD_EXAMPLES "whisper: build examples"       ${WHISPER_STANDALONE})
+option(WHISPER_BUILD_SERVER   "whisper: build server example" ${WHISPER_STANDALONE})
 
-    target_link_libraries(${TARGET} PRIVATE ${FOUNDATION_FRAMEWORK} ${COREML_FRAMEWORK})
+# 3rd party libs
+option(WHISPER_CURL "whisper: use libcurl to download model from an URL" OFF)
+option(WHISPER_SDL2 "whisper: support for libSDL2" OFF)
 
-    set_target_properties(${TARGET} PROPERTIES
-        COMPILE_FLAGS "-fobjc-arc"
-        XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC YES
-        )
-    set_target_properties(${TARGET} PROPERTIES FOLDER "libs")
+if (CMAKE_SYSTEM_NAME MATCHES "Linux")
+    option(WHISPER_FFMPEG "whisper: support building and linking with ffmpeg libs (avcodec, swresample, ...)" OFF)
 endif()
 
-if (WHISPER_OPENVINO)
-    set(TARGET whisper.openvino)
+option(WHISPER_COREML                "whisper: enable Core ML framework"  OFF)
+option(WHISPER_COREML_ALLOW_FALLBACK "whisper: allow non-CoreML fallback" OFF)
+option(WHISPER_OPENVINO              "whisper: support for OpenVINO"      OFF)
 
-    add_library(${TARGET} OBJECT
-        openvino/whisper-openvino-encoder.h
-        openvino/whisper-openvino-encoder.cpp
-        )
+# Required for relocatable CMake package
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/build-info.cmake)
 
-    target_include_directories(${TARGET} PUBLIC
-        .
-        )
+# override ggml options
+set(GGML_CCACHE             ${WHISPER_CCACHE})
+set(GGML_SANITIZE_THREAD    ${WHISPER_SANITIZE_THREAD})
+set(GGML_SANITIZE_ADDRESS   ${WHISPER_SANITIZE_ADDRESS})
+set(GGML_SANITIZE_UNDEFINED ${WHISPER_SANITIZE_UNDEFINED})
+set(GGML_ALL_WARNINGS       ${WHISPER_ALL_WARNINGS})
+set(GGML_FATAL_WARNINGS     ${WHISPER_FATAL_WARNINGS})
 
-    set_property(TARGET ${TARGET} PROPERTY POSITION_INDEPENDENT_CODE ON)
-    set(WHISPER_EXTRA_FLAGS ${WHISPER_EXTRA_FLAGS} -DWHISPER_USE_OPENVINO)
+# transition helpers
+function (whisper_option_depr TYPE OLD NEW)
+    if (${OLD})
+        message(${TYPE} "${OLD} is deprecated and will be removed in the future.\nUse ${NEW} instead\n")
+        set(${NEW} ON)
+    endif()
+endfunction()
 
-    target_link_libraries(${TARGET} PRIVATE ggml openvino::runtime)
-    set_target_properties(${TARGET} PROPERTIES FOLDER "libs")
+whisper_option_depr(FATAL_ERROR WHISPER_CUBLAS              GGML_CUDA)
+whisper_option_depr(WARNING     WHISPER_CUDA                GGML_CUDA)
+whisper_option_depr(WARNING     WHISPER_KOMPUTE             GGML_KOMPUTE)
+whisper_option_depr(WARNING     WHISPER_METAL               GGML_METAL)
+whisper_option_depr(WARNING     WHISPER_METAL_EMBED_LIBRARY GGML_METAL_EMBED_LIBRARY)
+whisper_option_depr(WARNING     WHISPER_NATIVE              GGML_NATIVE)
+whisper_option_depr(WARNING     WHISPER_OPENMP              GGML_OPENMP)
+whisper_option_depr(WARNING     WHISPER_RPC                 GGML_RPC)
+whisper_option_depr(WARNING     WHISPER_SYCL                GGML_SYCL)
+whisper_option_depr(WARNING     WHISPER_SYCL_F16            GGML_SYCL_F16)
+
+#
+# build the library
+#
+
+if (NOT TARGET ggml)
+    add_subdirectory(ggml)
+    # ... otherwise assume ggml is added by a parent CMakeLists.txt
 endif()
+add_subdirectory(src)
 
-# whisper
+#
+# install
+#
 
-add_library(whisper
-            ../include/whisper.h
-            whisper.cpp
-            )
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
-# Set the version numbers
-set_target_properties(whisper PROPERTIES
-    VERSION ${PROJECT_VERSION}
-    SOVERSION ${SOVERSION}
-)
+set(WHISPER_BUILD_NUMBER        ${BUILD_NUMBER})
+set(WHISPER_BUILD_COMMIT        ${BUILD_COMMIT})
+set(WHISPER_INSTALL_VERSION     ${CMAKE_PROJECT_VERSION})
 
-target_include_directories(whisper PUBLIC . ../include)
-target_compile_features   (whisper PUBLIC cxx_std_11) # don't bump
+set(WHISPER_INCLUDE_INSTALL_DIR ${CMAKE_INSTALL_INCLUDEDIR} CACHE PATH "Location of header  files")
+set(WHISPER_LIB_INSTALL_DIR     ${CMAKE_INSTALL_LIBDIR}     CACHE PATH "Location of library files")
+set(WHISPER_BIN_INSTALL_DIR     ${CMAKE_INSTALL_BINDIR}     CACHE PATH "Location of binary  files")
 
-if (WHISPER_EXTRA_FLAGS)
-    target_compile_options(whisper PRIVATE ${WHISPER_EXTRA_FLAGS})
-endif()
+get_directory_property(WHISPER_TRANSIENT_DEFINES COMPILE_DEFINITIONS)
 
-target_link_libraries(whisper PUBLIC ggml)
+set_target_properties(whisper PROPERTIES PUBLIC_HEADER ${CMAKE_CURRENT_SOURCE_DIR}/include/whisper.h)
+install(TARGETS whisper LIBRARY PUBLIC_HEADER)
 
-if (WHISPER_COREML)
-    target_link_libraries(whisper PRIVATE whisper.coreml)
-endif()
+configure_package_config_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/whisper-config.cmake.in
+        ${CMAKE_CURRENT_BINARY_DIR}/whisper-config.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/whisper
+    PATH_VARS
+    WHISPER_INCLUDE_INSTALL_DIR
+    WHISPER_LIB_INSTALL_DIR
+    WHISPER_BIN_INSTALL_DIR )
 
-if (WHISPER_OPENVINO)
-    target_link_libraries(whisper PRIVATE whisper.openvino)
-endif()
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/whisper-version.cmake
+    VERSION ${WHISPER_INSTALL_VERSION}
+    COMPATIBILITY SameMajorVersion)
 
-if (WHISPER_MKL)
-    target_link_libraries(whisper PRIVATE MKL::MKL)
-endif()
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/whisper-config.cmake
+              ${CMAKE_CURRENT_BINARY_DIR}/whisper-version.cmake
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/whisper)
 
-if (BUILD_SHARED_LIBS)
-    set_target_properties(whisper PROPERTIES POSITION_INDEPENDENT_CODE ON)
-    target_compile_definitions(whisper PRIVATE WHISPER_SHARED WHISPER_BUILD)
+configure_file(cmake/whisper.pc.in
+        "${CMAKE_CURRENT_BINARY_DIR}/whisper.pc"
+        @ONLY)
+
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/whisper.pc"
+        DESTINATION lib/pkgconfig)
+
+#
+# programs, examples and tests
+#
+
+if (WHISPER_BUILD_TESTS AND NOT CMAKE_JS_VERSION)
+    #include(CTest)
+    #add_subdirectory(tests)
+endif ()
+
+if (WHISPER_BUILD_EXAMPLES)
+    add_subdirectory(examples)
 endif()
